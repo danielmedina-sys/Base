@@ -1,0 +1,6 @@
+{
+  "name": "Gestor de Cuentas Bancarias y Contactos",
+  "description": "Sistema para la gestión y consulta de bases de datos de cuentas bancarias y contactos con filtros avanzados, importación/exportación de Excel y validación bancaria.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
