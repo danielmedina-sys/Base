@@ -234,10 +234,10 @@ export const ImportExportModal: React.FC<ImportExportModalProps> = ({
 
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-600">
                 <span className="font-semibold text-slate-800 block mb-1">
-                  Reconocimiento automático de columnas:
+                  Mapeo exacto por encabezados (sin importar el orden de columnas):
                 </span>
-                <p>
-                  El sistema detecta columnas con 20 dígitos (número de cuenta), identifica automáticamente el banco venezolano por sus primeros 4 dígitos (ej: 0102 Banco de Venezuela, 0174 Banplus), agrupa múltiples cuentas de un mismo titular por su cédula o nombre, y extrae correos y teléfonos.
+                <p className="leading-relaxed">
+                  El importador busca automáticamente las columnas: <strong>Titular / Beneficiario</strong>, <strong>Alias / Nombre Corto</strong>, <strong>Banco</strong>, <strong>Código Banco</strong>, <strong>Número de Cuenta</strong> (remueve el apóstrofe inicial si lo tiene), <strong>C.I. / RIF</strong>, <strong>Teléfono / Contacto</strong>, <strong>Pago Móvil</strong> (activa Pago Móvil si dice "Sí" o "Si") y <strong>Correo Electrónico</strong>. La columna <strong>N°</strong> se ignora por completo.
                 </p>
               </div>
             </div>
@@ -367,15 +367,19 @@ export const ImportExportModal: React.FC<ImportExportModalProps> = ({
                 </div>
               </div>
 
-              <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-lg text-xs">
-                <table className="w-full text-left">
-                  <thead className="bg-slate-100 text-slate-600 sticky top-0 font-semibold text-[11px]">
+              <div className="max-h-64 overflow-x-auto overflow-y-auto border border-slate-200 rounded-lg text-xs">
+                <table className="w-full text-left whitespace-nowrap">
+                  <thead className="bg-slate-100 text-slate-700 sticky top-0 font-semibold text-[11px]">
                     <tr>
-                      <th className="p-2">Titular</th>
-                      <th className="p-2">C.I. / RIF</th>
+                      <th className="p-2">Titular / Beneficiario</th>
+                      <th className="p-2">Alias</th>
                       <th className="p-2">Banco</th>
-                      <th className="p-2">N° Cuenta</th>
-                      <th className="p-2">Correo</th>
+                      <th className="p-2">Código</th>
+                      <th className="p-2">Número de Cuenta</th>
+                      <th className="p-2">C.I. / RIF</th>
+                      <th className="p-2">Teléfono</th>
+                      <th className="p-2 text-center">Pago Móvil</th>
+                      <th className="p-2">Correo Electrónico</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -383,9 +387,21 @@ export const ImportExportModal: React.FC<ImportExportModalProps> = ({
                       c.accounts.map((acc) => (
                         <tr key={`${c.id}-${acc.id}`} className="hover:bg-slate-50">
                           <td className="p-2 font-medium text-slate-800">{c.name}</td>
-                          <td className="p-2 font-mono">{c.documentType}-{c.documentNumber}</td>
+                          <td className="p-2 text-slate-500">{c.alias || '-'}</td>
                           <td className="p-2">{acc.bankName}</td>
-                          <td className="p-2 font-mono">{acc.accountNumber}</td>
+                          <td className="p-2 font-mono text-slate-600">{acc.bankCode}</td>
+                          <td className="p-2 font-mono font-medium text-slate-900">{acc.accountNumber}</td>
+                          <td className="p-2 font-mono">{c.documentType}-{c.documentNumber}</td>
+                          <td className="p-2 font-mono text-slate-600">{c.phone || acc.mobilePaymentPhone || '-'}</td>
+                          <td className="p-2 text-center">
+                            {acc.hasMobilePayment ? (
+                              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                Sí
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">No</span>
+                            )}
+                          </td>
                           <td className="p-2 text-slate-500">{c.email || '-'}</td>
                         </tr>
                       ))

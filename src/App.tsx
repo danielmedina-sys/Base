@@ -588,6 +588,10 @@ export default function App() {
           }
           if (!current.email && imported.email) current.email = imported.email;
           if (!current.phone && imported.phone) current.phone = imported.phone;
+          if (!current.alias && imported.alias) current.alias = imported.alias;
+          if (current.name === 'TITULAR PENDIENTE' && imported.name !== 'TITULAR PENDIENTE') {
+            current.name = imported.name;
+          }
           mergedMap.set(key, current);
         } else {
           mergedMap.set(key, imported);
@@ -596,15 +600,21 @@ export default function App() {
 
       finalList = Array.from(mergedMap.values());
       setContacts(finalList);
-      showToast(`Importación completada. Total: ${finalList.length} contactos.`);
+      showToast(`Importación completada. Guardando ${finalList.length} contactos en PostgreSQL...`);
     }
 
-    // Sync full list to Vercel Postgres
+    // Sync full list to PostgreSQL
     try {
-      await apiBatchSync(finalList, mode);
+      const res = await apiBatchSync(finalList, mode);
       setLastSyncTime(new Date());
-    } catch (err) {
+      if (res?.source === 'postgres' || res?.source === 'vercel_postgres') {
+        showToast(`¡${finalList.length} contactos guardados exitosamente en PostgreSQL!`);
+      } else {
+        showToast(`¡${finalList.length} contactos sincronizados!`);
+      }
+    } catch (err: any) {
       console.error('Error syncing imported data to server:', err);
+      showToast('Guardado localmente. Revisa la conexión con PostgreSQL.');
     }
   };
 
