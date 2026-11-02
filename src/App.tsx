@@ -1,8 +1,17 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Contact, BankAccount, FilterState } from './types';
-import { loadContacts, saveContacts, resetToDefaultData } from './utils/storage';
+import { loadContacts, saveContacts } from './utils/storage';
 import { flattenContactsToRows, FlattenedAccountRow, exportToExcel } from './utils/excel';
 import { generateTransferSummary } from './utils/formatter';
+import {
+  apiFetchContacts,
+  apiSaveContact,
+  apiDeleteContact,
+  apiBatchSync,
+  apiResetDatabase,
+  apiGetStatus,
+  DbStatusInfo,
+} from './utils/api';
 
 import { Header } from './components/Header';
 import { StatsBar } from './components/StatsBar';
@@ -12,12 +21,22 @@ import { ContactsGrid } from './components/ContactsGrid';
 import { AccountModal } from './components/AccountModal';
 import { ImportExportModal } from './components/ImportExportModal';
 import { DetailDrawer } from './components/DetailDrawer';
+import { SyncModal } from './components/SyncModal';
 import { Toast } from './components/Toast';
-import { FileSpreadsheet, UploadCloud, Database, Sparkles, X } from 'lucide-react';
+import { FileSpreadsheet, UploadCloud, Database, Sparkles, X, RefreshCw } from 'lucide-react';
 
 export default function App() {
+  // Start with localStorage cache for instantaneous 0ms first render
   const [contacts, setContacts] = useState<Contact[]>(() => loadContacts());
   const [activeView, setActiveView] = useState<'accounts' | 'contacts'>('accounts');
+
+  // Cloud Sync & Vercel Postgres state
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [statusInfo, setStatusInfo] = useState<DbStatusInfo | null>(null);
+  const [isLoadingStatus, setIsLoadingStatus] = useState(true);
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  const [dataSource, setDataSource] = useState<string>('local_storage');
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
 
   // Drag and drop state
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -56,10 +75,61 @@ export default function App() {
     }, 2400);
   }, []);
 
-  // Save to localStorage when contacts state changes
+  // Save to local cache whenever contacts change
   useEffect(() => {
     saveContacts(contacts);
   }, [contacts]);
+
+  // Load cloud data from /api/contacts and check DB health
+  const loadCloudData = useCallback(
+    async (showNotification = false) => {
+      setIsSyncing(true);
+      try {
+        const [contactsRes, statusRes] = await Promise.all([
+          apiFetchContacts(),
+          apiGetStatus(),
+        ]);
+
+        setStatusInfo(statusRes);
+        if (contactsRes.contacts && contactsRes.contacts.length > 0) {
+          setContacts(contactsRes.contacts);
+        }
+        setDataSource(contactsRes.source);
+        setLastSyncTime(new Date());
+
+        if (showNotification) {
+          if (statusRes.connected && statusRes.hasPostgresEnv) {
+            showToast('Sincronizado con Vercel Postgres');
+          } else {
+            showToast('Sincronizado con el servidor API');
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching cloud data:', err);
+        if (showNotification) {
+          showToast('No se pudo conectar al servidor; usando datos locales.');
+        }
+      } finally {
+        setIsSyncing(false);
+        setIsLoadingStatus(false);
+      }
+    },
+    [showToast]
+  );
+
+  // Initial fetch on mount
+  useEffect(() => {
+    loadCloudData(false);
+  }, [loadCloudData]);
+
+  // Auto-sync when window regains focus to catch changes made by other users
+  useEffect(() => {
+    const handleFocus = () => {
+      loadCloudData(false);
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [loadCloudData]);
 
   // Total Accounts count
   const totalAccountsCount = useMemo(() => {
@@ -277,7 +347,6 @@ export default function App() {
   const handleEditAccount = (contactId: string, accountId: string) => {
     const foundContact = contacts.find((c) => c.id === contactId);
     if (foundContact) {
-      const foundAccount = foundContact.accounts.find((a) => a.id === accountId);
       setSelectedContact(foundContact);
       setSelectedAccountId(accountId);
       setIsAddingAccountToExistingContact(false);
@@ -302,47 +371,56 @@ export default function App() {
     }
   };
 
-  const handleDeleteAccount = (contactId: string, accountId: string) => {
+  // Delete account (syncs to server)
+  const handleDeleteAccount = async (contactId: string, accountId: string) => {
     if (!confirm('¿Estás seguro de eliminar esta cuenta bancaria?')) return;
 
-    setContacts((prev) =>
-      prev
-        .map((c) => {
-          if (c.id === contactId) {
-            const updatedAccounts = c.accounts.filter((a) => a.id !== accountId);
-            return {
-              ...c,
-              accounts: updatedAccounts,
-              updatedAt: new Date().toISOString(),
-            };
-          }
-          return c;
-        })
-        .filter((c) => c.accounts.length > 0) // optionally remove contact if empty
-    );
+    const contact = contacts.find((c) => c.id === contactId);
+    if (!contact) return;
 
-    showToast('Cuenta bancaria eliminada');
+    const updatedAccounts = contact.accounts.filter((a) => a.id !== accountId);
+
+    if (updatedAccounts.length === 0) {
+      // If contact has no remaining accounts, delete contact entirely
+      setContacts((prev) => prev.filter((c) => c.id !== contactId));
+      await apiDeleteContact(contactId);
+      showToast('Contacto y cuentas eliminados de la base de datos');
+    } else {
+      const updatedContact: Contact = {
+        ...contact,
+        accounts: updatedAccounts,
+        updatedAt: new Date().toISOString(),
+      };
+      setContacts((prev) => prev.map((c) => (c.id === contactId ? updatedContact : c)));
+      await apiSaveContact(updatedContact);
+      showToast('Cuenta eliminada y sincronizada');
+    }
+
     if (isDetailDrawerOpen && selectedContact?.id === contactId) {
       setIsDetailDrawerOpen(false);
     }
   };
 
-  const handleDeleteContact = (contactId: string) => {
+  // Delete contact (syncs to server)
+  const handleDeleteContact = async (contactId: string) => {
     if (!confirm('¿Deseas eliminar este contacto y todas sus cuentas asociadas?')) return;
 
     setContacts((prev) => prev.filter((c) => c.id !== contactId));
-    showToast('Contacto y cuentas eliminados');
+    await apiDeleteContact(contactId);
+    showToast('Contacto y cuentas eliminados de la base de datos');
+
     if (isDetailDrawerOpen && selectedContact?.id === contactId) {
       setIsDetailDrawerOpen(false);
     }
   };
 
-  // Save or Update contact & account
-  const handleSaveContactAndAccount = (
+  // Save or Update contact & account (syncs to server)
+  const handleSaveContactAndAccount = async (
     contactData: Partial<Contact>,
     accountData: Partial<BankAccount>
   ) => {
     const now = new Date().toISOString();
+    let contactToPersist: Contact | null = null;
 
     if (isAddingAccountToExistingContact && selectedContact) {
       // Adding account to existing contact
@@ -362,45 +440,39 @@ export default function App() {
         updatedAt: now,
       };
 
+      contactToPersist = {
+        ...selectedContact,
+        accounts: [...selectedContact.accounts, newAcc],
+        updatedAt: now,
+      };
+
       setContacts((prev) =>
-        prev.map((c) =>
-          c.id === selectedContact.id
-            ? {
-                ...c,
-                accounts: [...c.accounts, newAcc],
-                updatedAt: now,
-              }
-            : c
-        )
+        prev.map((c) => (c.id === selectedContact.id ? contactToPersist! : c))
       );
-      showToast('Nueva cuenta bancaria agregada al contacto');
+      showToast('Nueva cuenta bancaria guardada y sincronizada');
     } else if (selectedContact && selectedAccountId) {
       // Editing existing account & contact
+      contactToPersist = {
+        ...selectedContact,
+        ...contactData,
+        updatedAt: now,
+        accounts: selectedContact.accounts.map((acc) =>
+          acc.id === selectedAccountId
+            ? {
+                ...acc,
+                ...accountData,
+                updatedAt: now,
+              }
+            : acc
+        ),
+      };
+
       setContacts((prev) =>
-        prev.map((c) => {
-          if (c.id === selectedContact.id) {
-            return {
-              ...c,
-              ...contactData,
-              updatedAt: now,
-              accounts: c.accounts.map((acc) =>
-                acc.id === selectedAccountId
-                  ? {
-                      ...acc,
-                      ...accountData,
-                      updatedAt: now,
-                    }
-                  : acc
-              ),
-            };
-          }
-          return c;
-        })
+        prev.map((c) => (c.id === selectedContact.id ? contactToPersist! : c))
       );
-      showToast('Datos actualizados correctamente');
+      showToast('Datos actualizados y sincronizados');
     } else {
       // Creating a new Contact + Account
-      // Check if a contact with this document already exists to avoid duplicates
       const existingDoc = contacts.find(
         (c) =>
           c.documentNumber === contactData.documentNumber &&
@@ -408,7 +480,6 @@ export default function App() {
       );
 
       if (existingDoc) {
-        // Append account to that existing contact!
         const newAcc: BankAccount = {
           id: `acc-${Date.now()}`,
           contactId: existingDoc.id,
@@ -425,20 +496,17 @@ export default function App() {
           updatedAt: now,
         };
 
+        contactToPersist = {
+          ...existingDoc,
+          accounts: [...existingDoc.accounts, newAcc],
+          updatedAt: now,
+        };
+
         setContacts((prev) =>
-          prev.map((c) =>
-            c.id === existingDoc.id
-              ? {
-                  ...c,
-                  accounts: [...c.accounts, newAcc],
-                  updatedAt: now,
-                }
-              : c
-          )
+          prev.map((c) => (c.id === existingDoc.id ? contactToPersist! : c))
         );
         showToast(`Cuenta agregada al contacto existente: ${existingDoc.name}`);
       } else {
-        // Create brand new contact
         const contactId = `contact-${Date.now()}`;
         const newAcc: BankAccount = {
           id: `acc-${Date.now()}`,
@@ -456,7 +524,7 @@ export default function App() {
           updatedAt: now,
         };
 
-        const newContact: Contact = {
+        contactToPersist = {
           id: contactId,
           name: contactData.name || 'TITULAR',
           alias: contactData.alias,
@@ -473,19 +541,28 @@ export default function App() {
           updatedAt: now,
         };
 
-        setContacts((prev) => [newContact, ...prev]);
-        showToast('Nuevo registro bancario creado con éxito');
+        setContacts((prev) => [contactToPersist!, ...prev]);
+        showToast('Nuevo registro guardado y sincronizado');
       }
+    }
+
+    // Send update to API / Vercel Postgres in background
+    if (contactToPersist) {
+      apiSaveContact(contactToPersist).catch((err) => {
+        console.error('Error saving contact to API:', err);
+      });
     }
   };
 
-  // Import handler
-  const handleImportSuccess = (importedContacts: Contact[], mode: 'merge' | 'replace') => {
+  // Import handler with batch sync
+  const handleImportSuccess = async (importedContacts: Contact[], mode: 'merge' | 'replace') => {
+    let finalList: Contact[] = [];
+
     if (mode === 'replace') {
+      finalList = importedContacts;
       setContacts(importedContacts);
       showToast(`Base de datos reemplazada con ${importedContacts.length} contactos.`);
     } else {
-      // Merge by document number or append
       const mergedMap = new Map<string, Contact>();
       for (const c of contacts) {
         mergedMap.set(`${c.documentType}-${c.documentNumber}`, { ...c });
@@ -495,7 +572,6 @@ export default function App() {
         const key = `${imported.documentType}-${imported.documentNumber}`;
         if (mergedMap.has(key)) {
           const current = mergedMap.get(key)!;
-          // Merge accounts avoiding exact account number duplicates
           const existingAccNums = new Set(current.accounts.map((a) => a.accountNumber));
           for (const newAcc of imported.accounts) {
             if (!existingAccNums.has(newAcc.accountNumber)) {
@@ -510,17 +586,47 @@ export default function App() {
         }
       }
 
-      const mergedList = Array.from(mergedMap.values());
-      setContacts(mergedList);
-      showToast(`Importación completada. Total: ${mergedList.length} contactos.`);
+      finalList = Array.from(mergedMap.values());
+      setContacts(finalList);
+      showToast(`Importación completada. Total: ${finalList.length} contactos.`);
+    }
+
+    // Sync full list to Vercel Postgres
+    try {
+      await apiBatchSync(finalList, mode);
+      setLastSyncTime(new Date());
+    } catch (err) {
+      console.error('Error syncing imported data to server:', err);
     }
   };
 
-  // Reset to default
-  const handleResetData = () => {
-    const initial = resetToDefaultData();
-    setContacts(initial);
-    showToast('Base de datos restaurada a los datos de ejemplo iniciales.');
+  // Reset database to default
+  const handleResetData = async () => {
+    try {
+      const res = await apiResetDatabase();
+      setContacts(res.contacts);
+      setLastSyncTime(new Date());
+      showToast('Base de datos restaurada a los datos de ejemplo.');
+    } catch (err) {
+      console.error('Error resetting database:', err);
+      showToast('Error al restaurar base de datos');
+    }
+  };
+
+  // Push local contacts to cloud
+  const handlePushToCloud = async () => {
+    setIsSyncing(true);
+    showToast('Subiendo contactos a la base de datos central...');
+    try {
+      const res = await apiBatchSync(contacts, 'replace');
+      setContacts(res.contacts);
+      setLastSyncTime(new Date());
+      showToast('¡Datos subidos exitosamente a la Nube!');
+    } catch (err) {
+      showToast('Error al subir datos');
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   return (
@@ -552,7 +658,7 @@ export default function App() {
           </div>
           <h3 className="text-xl font-bold">Suelta tu archivo de Excel aquí</h3>
           <p className="text-sm text-slate-300 mt-1 max-w-md">
-            Compatible con archivos .xlsx, .xls y .csv. Se reconocerán automáticamente todas las cuentas y contactos sin límite de cantidad.
+            Compatible con archivos .xlsx, .xls y .csv. Se sincronizarán automáticamente todas las cuentas y contactos con la base de datos central.
           </p>
         </div>
       )}
@@ -564,11 +670,16 @@ export default function App() {
         onOpenNewModal={handleOpenNewModal}
         onOpenImportExport={() => setIsImportExportOpen(true)}
         onExportExcel={() => exportToExcel(contacts)}
+        onOpenSyncModal={() => setIsSyncModalOpen(true)}
+        onQuickSync={() => loadCloudData(true)}
+        isSyncing={isSyncing}
+        statusInfo={statusInfo}
+        dataSource={dataSource}
       />
 
       {/* Main Content Workspace */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full space-y-5">
-        {/* Quick Capacity & Excel Import Helper Banner */}
+        {/* Banner with Cloud Sync info */}
         {!dismissBanner && (
           <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-emerald-950 text-white rounded-xl p-4 sm:p-5 shadow-sm border border-slate-700/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-start gap-3">
@@ -578,25 +689,40 @@ export default function App() {
               <div>
                 <div className="flex items-center gap-2">
                   <h4 className="text-sm font-bold text-white">
-                    Capacidad ilimitada para tus cuentas y contactos
+                    Sincronización multi-usuario en tiempo real
                   </h4>
-                  <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-semibold border border-emerald-500/30">
-                    10.000+ registros
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${
+                      statusInfo?.connected
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                        : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                    }`}
+                  >
+                    {statusInfo?.provider || 'API Servidor'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-300 mt-0.5 leading-relaxed max-w-2xl">
-                  Puedes almacenar miles de cuentas bancarias sin restricciones. Si tu archivo de Excel tiene más filas de las que ves aquí, puedes cargarlo directamente o arrastrarlo a esta ventana para sincronizarlas al instante.
+                  {statusInfo?.connected
+                    ? 'Los cambios y nuevas cuentas se guardan automáticamente en Vercel Postgres y están disponibles para todos los usuarios al instante.'
+                    : 'Las cuentas se sincronizan a través de los endpoints /api/... y se respaldan en la base de datos central.'}
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
               <button
+                onClick={() => setIsSyncModalOpen(true)}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 font-medium text-xs rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                <Database className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Ver Estado Nube</span>
+              </button>
+              <button
                 onClick={() => setIsImportExportOpen(true)}
                 className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-lg transition-colors flex items-center gap-1.5 shadow-sm"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>Importar mi Excel completo</span>
+                <span>Importar Excel</span>
               </button>
               <button
                 onClick={() => setDismissBanner(true)}
@@ -609,29 +735,18 @@ export default function App() {
           </div>
         )}
 
-        {/* Statistics Bar */}
-        <StatsBar
-          contacts={contacts}
-          totalAccountsCount={totalAccountsCount}
-        />
+        {/* Dynamic Numerical Statistics */}
+        <StatsBar contacts={contacts} totalAccountsCount={totalAccountsCount} />
 
-        {/* Universal Search and Advanced Filters */}
+        {/* Search, Grouping, & Filter Bar */}
         <FilterBar
           filters={filters}
           setFilters={setFilters}
-          totalMatches={
-            activeView === 'accounts'
-              ? filteredAccountRows.length
-              : filteredContacts.length
-          }
-          totalRecords={
-            activeView === 'accounts'
-              ? allAccountRows.length
-              : contacts.length
-          }
+          totalMatches={activeView === 'accounts' ? filteredAccountRows.length : filteredContacts.length}
+          totalRecords={activeView === 'accounts' ? allAccountRows.length : contacts.length}
         />
 
-        {/* Active View: Accounts Table OR Contacts Grid */}
+        {/* Ledger View (Accounts Table) or Card Grid (Contacts View) */}
         {activeView === 'accounts' ? (
           <AccountsTable
             rows={filteredAccountRows}
@@ -655,26 +770,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-4 mt-auto">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
-          <p>
-            BancaDatos · Sistema de Gestión de Cuentas Bancarias y Contactos
-          </p>
-          <div className="flex items-center gap-4">
-            <span>Almacenamiento persistente local</span>
-            <span aria-hidden="true">·</span>
-            <button
-              onClick={() => setIsImportExportOpen(true)}
-              className="text-slate-700 hover:text-slate-900 font-medium"
-            >
-              Cargar / Exportar Excel
-            </button>
-          </div>
-        </div>
-      </footer>
-
-      {/* Account & Contact Create/Edit Modal */}
+      {/* Account / Contact Creation and Edit Modal */}
       <AccountModal
         isOpen={isAccountModalOpen}
         onClose={() => setIsAccountModalOpen(false)}
@@ -711,6 +807,21 @@ export default function App() {
         onAddAccount={handleAddAccountToContact}
         onDeleteAccount={handleDeleteAccount}
         onCopyText={handleCopyText}
+      />
+
+      {/* Cloud Sync & Postgres Status Modal */}
+      <SyncModal
+        isOpen={isSyncModalOpen}
+        onClose={() => setIsSyncModalOpen(false)}
+        statusInfo={statusInfo}
+        isLoadingStatus={isLoadingStatus}
+        onRefreshStatus={() => loadCloudData(true)}
+        onPullFromCloud={() => loadCloudData(true)}
+        onPushToCloud={handlePushToCloud}
+        onResetCloudData={handleResetData}
+        totalContacts={contacts.length}
+        lastSyncTime={lastSyncTime}
+        dataSource={dataSource}
       />
 
       {/* Instant Action Feedback Toast */}
