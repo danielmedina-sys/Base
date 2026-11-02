@@ -48,14 +48,10 @@ export const SyncModal: React.FC<SyncModalProps> = ({
 
   const isPostgres = statusInfo?.connected && statusInfo.hasPostgresEnv;
 
-  const envSnippet = `# Variables inyectadas automáticamente al crear Vercel Postgres en vercel.com
+  const envSnippet = `# Vercel Postgres / Prisma Postgres connection string
 POSTGRES_URL="postgres://default:..."
-POSTGRES_PRISMA_URL="postgres://default:..."
-POSTGRES_URL_NON_POOLING="postgres://default:..."
-POSTGRES_USER="default"
-POSTGRES_HOST="..."
-POSTGRES_PASSWORD="..."
-POSTGRES_DATABASE="verceldb"`;
+# O si usas Prisma Postgres / Neon / Supabase:
+DATABASE_URL="postgres://default:..."`;
 
   const handleCopyEnv = () => {
     navigator.clipboard.writeText(envSnippet);
@@ -128,8 +124,21 @@ POSTGRES_DATABASE="verceldb"`;
                 {statusInfo?.message ||
                   (isPostgres
                     ? 'La base de datos PostgreSQL está activa. Los contactos y cuentas se comparten en tiempo real entre todos los usuarios.'
-                    : 'La variable POSTGRES_URL no está detectada en este entorno. El servidor sincroniza los datos mediante memoria y respaldo local.')}
+                    : 'Las variables POSTGRES_URL o DATABASE_URL no están detectadas en este entorno. El servidor sincroniza los datos mediante memoria y respaldo local.')}
               </p>
+              {statusInfo?.error && (
+                <div className="mt-2 p-2.5 rounded-lg bg-red-100/80 border border-red-200 text-red-900 font-mono text-[11px] leading-tight space-y-1">
+                  <div className="font-semibold text-red-950 flex items-center justify-between">
+                    <span>Detalle del Error Postgres:</span>
+                    {statusInfo.code && <span className="bg-red-200 px-1.5 py-0.5 rounded text-[10px]">Código: {statusInfo.code}</span>}
+                  </div>
+                  <div className="break-all">{statusInfo.error}</div>
+                  {statusInfo.detail && <div className="text-red-700 text-[10px]">{statusInfo.detail}</div>}
+                  {statusInfo.envVarUsed && (
+                    <div className="text-slate-600 text-[10px]">Variable leída: <strong>{statusInfo.envVarUsed}</strong></div>
+                  )}
+                </div>
+              )}
               {lastSyncTime && (
                 <div className="mt-2 text-[11px] text-slate-500 flex items-center gap-1.5">
                   <RefreshCw className="w-3 h-3 text-slate-400" />

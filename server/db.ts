@@ -10,50 +10,118 @@ let isInitialized = false;
 // In-memory fallback if no Postgres URL is provided yet
 let memoryContacts: Contact[] = JSON.parse(JSON.stringify(INITIAL_CONTACTS));
 
+export interface DbConnectionInfo {
+  url: string | null;
+  envVarName: string | null;
+  isPrisma: boolean;
+  cleanUrl: string | null;
+}
+
+/**
+ * Returns connection info from process.env.
+ * Checks POSTGRES_URL, DATABASE_URL, POSTGRES_PRISMA_URL, POSTGRES_URL_NON_POOLING.
+ * Handles Prisma Postgres protocol `prisma+postgres://` by converting to `postgres://`.
+ */
+export function getConnectionInfo(): DbConnectionInfo {
+  let envVarName: string | null = null;
+  let rawUrl: string | null = null;
+
+  if (process.env.POSTGRES_URL) {
+    envVarName = 'POSTGRES_URL';
+    rawUrl = process.env.POSTGRES_URL.trim();
+  } else if (process.env.DATABASE_URL) {
+    envVarName = 'DATABASE_URL';
+    rawUrl = process.env.DATABASE_URL.trim();
+  } else if (process.env.POSTGRES_PRISMA_URL) {
+    envVarName = 'POSTGRES_PRISMA_URL';
+    rawUrl = process.env.POSTGRES_PRISMA_URL.trim();
+  } else if (process.env.POSTGRES_URL_NON_POOLING) {
+    envVarName = 'POSTGRES_URL_NON_POOLING';
+    rawUrl = process.env.POSTGRES_URL_NON_POOLING.trim();
+  }
+
+  if (!rawUrl) {
+    return { url: null, envVarName: null, isPrisma: false, cleanUrl: null };
+  }
+
+  let cleanUrl = rawUrl;
+  const isPrisma = rawUrl.startsWith('prisma+postgres://');
+
+  // Convert prisma+postgres:// to standard postgres:// for node-pg driver
+  if (isPrisma) {
+    cleanUrl = rawUrl.replace('prisma+postgres://', 'postgres://');
+  }
+
+  return {
+    url: rawUrl,
+    envVarName,
+    isPrisma,
+    cleanUrl,
+  };
+}
+
 export function getConnectionString(): string | null {
-  return (
-    process.env.POSTGRES_URL ||
-    process.env.POSTGRES_PRISMA_URL ||
-    process.env.DATABASE_URL ||
-    process.env.POSTGRES_URL_NON_POOLING ||
-    null
-  );
+  return getConnectionInfo().cleanUrl;
 }
 
 export function getPool(): pg.Pool | null {
-  const connectionString = getConnectionString();
-  if (!connectionString) {
+  const { cleanUrl } = getConnectionInfo();
+  if (!cleanUrl) {
     return null;
   }
 
   if (!pool) {
+    const isLocal = cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1');
+
     pool = new Pool({
-      connectionString,
-      ssl: connectionString.includes('localhost') ? false : { rejectUnauthorized: false },
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      connectionString: cleanUrl,
+      // For cloud databases (Vercel Postgres, Prisma Postgres, Supabase, Neon), SSL is required
+      ssl: isLocal ? false : { rejectUnauthorized: false },
+      max: 5,
+      idleTimeoutMillis: 10000,
+      connectionTimeoutMillis: 10000,
     });
 
     pool.on('error', (err) => {
-      console.error('Unexpected error on idle Postgres client', err);
+      console.error('Unexpected error on idle Postgres client:', err);
     });
   }
 
   return pool;
 }
 
+export interface DbErrorPayload {
+  message: string;
+  code?: string;
+  detail?: string;
+  hint?: string;
+  envVarUsed?: string | null;
+  isPrisma?: boolean;
+}
+
+export function formatDbError(err: any): DbErrorPayload {
+  const info = getConnectionInfo();
+  return {
+    message: err?.message || String(err),
+    code: err?.code,
+    detail: err?.detail,
+    hint: err?.hint,
+    envVarUsed: info.envVarName,
+    isPrisma: info.isPrisma,
+  };
+}
+
 export async function initDb(): Promise<void> {
   const p = getPool();
   if (!p) {
-    console.log('ℹ️ Running in Local Memory / Fallback Mode (POSTGRES_URL not set).');
+    console.log('ℹ️ Running in Local Memory / Fallback Mode (No POSTGRES_URL / DATABASE_URL set).');
     return;
   }
 
   if (isInitialized) return;
 
   try {
-    // Create contacts table if it doesn't exist
+    // 1. Create contacts table
     await p.query(`
       CREATE TABLE IF NOT EXISTS contacts (
         id VARCHAR(64) PRIMARY KEY,
@@ -71,16 +139,23 @@ export async function initDb(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-
-      CREATE INDEX IF NOT EXISTS idx_contacts_doc ON contacts(document_type, document_number);
-      CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);
     `);
 
-    // Check if empty, seed with INITIAL_CONTACTS
+    // 2. Create indices (safe even if already exist)
+    try {
+      await p.query(`
+        CREATE INDEX IF NOT EXISTS idx_contacts_doc ON contacts(document_type, document_number);
+        CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);
+      `);
+    } catch (idxErr) {
+      console.warn('Index creation warning (non-fatal):', idxErr);
+    }
+
+    // 3. Seed initial contacts if table is empty
     const countRes = await p.query('SELECT COUNT(*) FROM contacts');
     const count = parseInt(countRes.rows[0].count, 10);
     if (count === 0 && INITIAL_CONTACTS.length > 0) {
-      console.log('🌱 Seeding initial contacts to Vercel Postgres...');
+      console.log('🌱 Seeding initial contacts to Postgres...');
       for (const contact of INITIAL_CONTACTS) {
         await p.query(
           `INSERT INTO contacts (
@@ -108,9 +183,10 @@ export async function initDb(): Promise<void> {
     }
 
     isInitialized = true;
-    console.log('✅ Vercel Postgres database initialized successfully');
-  } catch (err) {
-    console.error('❌ Failed to initialize Vercel Postgres table:', err);
+    console.log('✅ Postgres database table initialized successfully');
+  } catch (err: any) {
+    console.error('❌ Failed to initialize Postgres table:', err);
+    throw err; // Rethrow so caller can report exact error in JSON
   }
 }
 
@@ -139,15 +215,25 @@ export async function getAllContacts(): Promise<{ contacts: Contact[]; source: s
     return { contacts: memoryContacts, source: 'local_memory' };
   }
 
-  try {
-    await initDb();
-    const result = await p.query('SELECT * FROM contacts ORDER BY name ASC');
-    const contacts = result.rows.map(mapRowToContact);
-    return { contacts, source: 'vercel_postgres' };
-  } catch (err) {
-    console.error('Error fetching contacts from Postgres, falling back to memory:', err);
-    return { contacts: memoryContacts, source: 'local_fallback' };
+  await initDb();
+  const result = await p.query('SELECT * FROM contacts ORDER BY name ASC');
+  const contacts = result.rows.map(mapRowToContact);
+  return { contacts, source: 'postgres' };
+}
+
+export async function getContactById(id: string): Promise<{ contact: Contact | null; source: string }> {
+  const p = getPool();
+  if (!p) {
+    const found = memoryContacts.find((c) => c.id === id) || null;
+    return { contact: found, source: 'local_memory' };
   }
+
+  await initDb();
+  const result = await p.query('SELECT * FROM contacts WHERE id = $1', [id]);
+  if (result.rows.length === 0) {
+    return { contact: null, source: 'postgres' };
+  }
+  return { contact: mapRowToContact(result.rows[0]), source: 'postgres' };
 }
 
 export async function upsertContact(contact: Contact): Promise<{ contact: Contact; source: string }> {
@@ -162,58 +248,46 @@ export async function upsertContact(contact: Contact): Promise<{ contact: Contac
     return { contact, source: 'local_memory' };
   }
 
-  try {
-    await initDb();
-    const query = `
-      INSERT INTO contacts (
-        id, name, alias, document_type, document_number, email, phone, category, company, notes, status, accounts, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-      ON CONFLICT (id) DO UPDATE SET
-        name = EXCLUDED.name,
-        alias = EXCLUDED.alias,
-        document_type = EXCLUDED.document_type,
-        document_number = EXCLUDED.document_number,
-        email = EXCLUDED.email,
-        phone = EXCLUDED.phone,
-        category = EXCLUDED.category,
-        company = EXCLUDED.company,
-        notes = EXCLUDED.notes,
-        status = EXCLUDED.status,
-        accounts = EXCLUDED.accounts,
-        updated_at = EXCLUDED.updated_at
-      RETURNING *;
-    `;
+  await initDb();
+  const query = `
+    INSERT INTO contacts (
+      id, name, alias, document_type, document_number, email, phone, category, company, notes, status, accounts, created_at, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      alias = EXCLUDED.alias,
+      document_type = EXCLUDED.document_type,
+      document_number = EXCLUDED.document_number,
+      email = EXCLUDED.email,
+      phone = EXCLUDED.phone,
+      category = EXCLUDED.category,
+      company = EXCLUDED.company,
+      notes = EXCLUDED.notes,
+      status = EXCLUDED.status,
+      accounts = EXCLUDED.accounts,
+      updated_at = EXCLUDED.updated_at
+    RETURNING *;
+  `;
 
-    const values = [
-      contact.id,
-      contact.name,
-      contact.alias || null,
-      contact.documentType,
-      contact.documentNumber,
-      contact.email || null,
-      contact.phone || null,
-      contact.category,
-      contact.company || null,
-      contact.notes || null,
-      contact.status,
-      JSON.stringify(contact.accounts || []),
-      contact.createdAt || new Date().toISOString(),
-      contact.updatedAt || new Date().toISOString(),
-    ];
+  const values = [
+    contact.id,
+    contact.name,
+    contact.alias || null,
+    contact.documentType,
+    contact.documentNumber,
+    contact.email || null,
+    contact.phone || null,
+    contact.category,
+    contact.company || null,
+    contact.notes || null,
+    contact.status,
+    JSON.stringify(contact.accounts || []),
+    contact.createdAt || new Date().toISOString(),
+    contact.updatedAt || new Date().toISOString(),
+  ];
 
-    const result = await p.query(query, values);
-    return { contact: mapRowToContact(result.rows[0]), source: 'vercel_postgres' };
-  } catch (err) {
-    console.error('Error upserting contact in Postgres:', err);
-    // fallback
-    const idx = memoryContacts.findIndex((c) => c.id === contact.id);
-    if (idx >= 0) {
-      memoryContacts[idx] = contact;
-    } else {
-      memoryContacts.unshift(contact);
-    }
-    return { contact, source: 'local_fallback' };
-  }
+  const result = await p.query(query, values);
+  return { contact: mapRowToContact(result.rows[0]), source: 'postgres' };
 }
 
 export async function deleteContact(id: string): Promise<{ success: boolean; source: string }> {
@@ -223,15 +297,9 @@ export async function deleteContact(id: string): Promise<{ success: boolean; sou
     return { success: true, source: 'local_memory' };
   }
 
-  try {
-    await initDb();
-    await p.query('DELETE FROM contacts WHERE id = $1', [id]);
-    return { success: true, source: 'vercel_postgres' };
-  } catch (err) {
-    console.error('Error deleting contact from Postgres:', err);
-    memoryContacts = memoryContacts.filter((c) => c.id !== id);
-    return { success: true, source: 'local_fallback' };
-  }
+  await initDb();
+  await p.query('DELETE FROM contacts WHERE id = $1', [id]);
+  return { success: true, source: 'postgres' };
 }
 
 export async function batchSyncContacts(
@@ -251,22 +319,17 @@ export async function batchSyncContacts(
     return { contacts: memoryContacts, source: 'local_memory' };
   }
 
-  try {
-    await initDb();
-    if (mode === 'replace') {
-      await p.query('DELETE FROM contacts');
-    }
-
-    for (const c of contacts) {
-      await upsertContact(c);
-    }
-
-    const all = await getAllContacts();
-    return all;
-  } catch (err) {
-    console.error('Error in batch sync:', err);
-    return { contacts, source: 'local_fallback' };
+  await initDb();
+  if (mode === 'replace') {
+    await p.query('DELETE FROM contacts');
   }
+
+  for (const c of contacts) {
+    await upsertContact(c);
+  }
+
+  const all = await getAllContacts();
+  return all;
 }
 
 export async function resetDatabaseToDefault(): Promise<{ contacts: Contact[]; source: string }> {
@@ -277,19 +340,23 @@ export async function getDbStatus(): Promise<{
   connected: boolean;
   provider: string;
   hasPostgresEnv: boolean;
+  envVarUsed: string | null;
   tableInitialized: boolean;
   message: string;
+  error?: string;
+  code?: string;
+  detail?: string;
 }> {
-  const connStr = getConnectionString();
-  const hasEnv = Boolean(connStr);
+  const info = getConnectionInfo();
 
-  if (!hasEnv) {
+  if (!info.cleanUrl) {
     return {
       connected: false,
       provider: 'Local Memory / LocalStorage',
       hasPostgresEnv: false,
+      envVarUsed: null,
       tableInitialized: false,
-      message: 'POSTGRES_URL no configurada en las variables de entorno. Los datos se almacenan en memoria y caché local.',
+      message: 'POSTGRES_URL o DATABASE_URL no configuradas en las variables de entorno.',
     };
   }
 
@@ -299,27 +366,35 @@ export async function getDbStatus(): Promise<{
       connected: false,
       provider: 'PostgreSQL',
       hasPostgresEnv: true,
+      envVarUsed: info.envVarName,
       tableInitialized: false,
-      message: 'No se pudo crear la conexión de Postgres.',
+      message: 'No se pudo instanciar el cliente pg.Pool.',
     };
   }
 
   try {
     const res = await p.query('SELECT NOW()');
+    await initDb();
     return {
       connected: true,
-      provider: 'Vercel Postgres',
+      provider: info.isPrisma ? 'Prisma Postgres' : 'PostgreSQL / Vercel Postgres',
       hasPostgresEnv: true,
+      envVarUsed: info.envVarName,
       tableInitialized: isInitialized,
-      message: `Conectado exitosamente a Vercel Postgres (${res.rows[0].now})`,
+      message: `Conectado exitosamente a la base de datos (${res.rows[0].now})`,
     };
   } catch (err: any) {
+    console.error('Database connection test failed:', err);
     return {
       connected: false,
-      provider: 'Vercel Postgres (Error)',
+      provider: info.isPrisma ? 'Prisma Postgres (Error)' : 'PostgreSQL (Error)',
       hasPostgresEnv: true,
-      tableInitialized: false,
-      message: `Error al conectar con Postgres: ${err?.message || String(err)}`,
+      envVarUsed: info.envVarName,
+      tableInitialized: isInitialized,
+      message: `Error al conectar con la base de datos: ${err?.message || String(err)}`,
+      error: err?.message || String(err),
+      code: err?.code,
+      detail: err?.detail,
     };
   }
 }

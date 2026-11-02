@@ -4,11 +4,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   getAllContacts,
+  getContactById,
   upsertContact,
   deleteContact,
   batchSyncContacts,
   resetDatabaseToDefault,
   getDbStatus,
+  formatDbError,
 } from './server/db.ts';
 
 dotenv.config();
@@ -27,9 +29,15 @@ app.get('/api/status', async (_req: Request, res: Response) => {
     const status = await getDbStatus();
     res.json(status);
   } catch (err: any) {
+    const dbErr = formatDbError(err);
     res.status(500).json({
       connected: false,
-      error: err?.message || 'Error checking status',
+      success: false,
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
+      hint: dbErr.hint,
+      envVarUsed: dbErr.envVarUsed,
     });
   }
 });
@@ -46,9 +54,41 @@ app.get('/api/contacts', async (_req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Error fetching contacts in /api/contacts:', err);
+    const dbErr = formatDbError(err);
     res.status(500).json({
       success: false,
-      error: err?.message || 'Failed to fetch contacts',
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
+      hint: dbErr.hint,
+      envVarUsed: dbErr.envVarUsed,
+    });
+  }
+});
+
+// GET contact by ID
+app.get('/api/contacts/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await getContactById(id);
+    if (!result.contact) {
+      return res.status(404).json({ success: false, error: `Contacto ${id} no encontrado` });
+    }
+    res.json({
+      success: true,
+      contact: result.contact,
+      source: result.source,
+    });
+  } catch (err: any) {
+    console.error('Error fetching contact in /api/contacts/:id:', err);
+    const dbErr = formatDbError(err);
+    res.status(500).json({
+      success: false,
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
+      hint: dbErr.hint,
+      envVarUsed: dbErr.envVarUsed,
     });
   }
 });
@@ -68,9 +108,14 @@ app.post('/api/contacts', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Error saving contact in /api/contacts:', err);
+    const dbErr = formatDbError(err);
     res.status(500).json({
       success: false,
-      error: err?.message || 'Failed to save contact',
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
+      hint: dbErr.hint,
+      envVarUsed: dbErr.envVarUsed,
     });
   }
 });
@@ -92,9 +137,14 @@ app.put('/api/contacts/:id', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Error updating contact in /api/contacts/:id:', err);
+    const dbErr = formatDbError(err);
     res.status(500).json({
       success: false,
-      error: err?.message || 'Failed to update contact',
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
+      hint: dbErr.hint,
+      envVarUsed: dbErr.envVarUsed,
     });
   }
 });
@@ -110,9 +160,14 @@ app.delete('/api/contacts/:id', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Error deleting contact in /api/contacts/:id:', err);
+    const dbErr = formatDbError(err);
     res.status(500).json({
       success: false,
-      error: err?.message || 'Failed to delete contact',
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
+      hint: dbErr.hint,
+      envVarUsed: dbErr.envVarUsed,
     });
   }
 });
@@ -133,9 +188,14 @@ app.post('/api/contacts/batch', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Error batch syncing contacts:', err);
+    const dbErr = formatDbError(err);
     res.status(500).json({
       success: false,
-      error: err?.message || 'Failed to batch sync contacts',
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
+      hint: dbErr.hint,
+      envVarUsed: dbErr.envVarUsed,
     });
   }
 });
@@ -151,9 +211,14 @@ app.post('/api/contacts/reset', async (_req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Error resetting database:', err);
+    const dbErr = formatDbError(err);
     res.status(500).json({
       success: false,
-      error: err?.message || 'Failed to reset database',
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
+      hint: dbErr.hint,
+      envVarUsed: dbErr.envVarUsed,
     });
   }
 });

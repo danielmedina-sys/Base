@@ -4,10 +4,11 @@ import {
   deleteContact,
   batchSyncContacts,
   resetDatabaseToDefault,
+  formatDbError,
 } from '../server/db.ts';
 
 export default async function handler(req: any, res: any) {
-  // Enable CORS if accessed externally
+  // Enable CORS
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -17,8 +18,7 @@ export default async function handler(req: any, res: any) {
   );
 
   if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
+    return res.status(200).end();
   }
 
   try {
@@ -58,7 +58,10 @@ export default async function handler(req: any, res: any) {
       // Upsert single contact
       const contact = body.contact || body;
       if (!contact || !contact.id || !contact.name) {
-        return res.status(400).json({ success: false, error: 'Contact ID and Name are required' });
+        return res.status(400).json({
+          success: false,
+          error: 'Contact ID and Name are required',
+        });
       }
 
       const result = await upsertContact(contact);
@@ -73,7 +76,10 @@ export default async function handler(req: any, res: any) {
       const contact = req.body?.contact || req.body;
       const id = req.query?.id || contact?.id;
       if (!contact || !id) {
-        return res.status(400).json({ success: false, error: 'Contact data and ID required' });
+        return res.status(400).json({
+          success: false,
+          error: 'Contact data and ID are required',
+        });
       }
       contact.id = id;
       const result = await upsertContact(contact);
@@ -87,7 +93,10 @@ export default async function handler(req: any, res: any) {
     if (req.method === 'DELETE') {
       const id = req.query?.id || req.body?.id;
       if (!id) {
-        return res.status(400).json({ success: false, error: 'Contact ID is required' });
+        return res.status(400).json({
+          success: false,
+          error: 'Contact ID is required',
+        });
       }
       const result = await deleteContact(String(id));
       return res.status(200).json({
@@ -96,12 +105,21 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    return res.status(405).json({ success: false, error: `Method ${req.method} not allowed` });
+    return res.status(405).json({
+      success: false,
+      error: `Method ${req.method} not allowed`,
+    });
   } catch (error: any) {
+    const dbErr = formatDbError(error);
     console.error('API Error in /api/contacts:', error);
     return res.status(500).json({
       success: false,
-      error: error?.message || 'Internal server error',
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
+      hint: dbErr.hint,
+      envVarUsed: dbErr.envVarUsed,
+      isPrisma: dbErr.isPrisma,
     });
   }
 }
