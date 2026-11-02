@@ -29,6 +29,22 @@ interface SyncModalProps {
   dataSource: string;
 }
 
+const toDisplayString = (val: any, fallback = ''): string => {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (typeof val === 'object') {
+    if (typeof val.message === 'string') return val.message;
+    if (typeof val.error === 'string') return toDisplayString(val.error);
+    try {
+      return JSON.stringify(val);
+    } catch {
+      return String(val);
+    }
+  }
+  return String(val);
+};
+
 export const SyncModal: React.FC<SyncModalProps> = ({
   isOpen,
   onClose,
@@ -46,12 +62,22 @@ export const SyncModal: React.FC<SyncModalProps> = ({
 
   if (!isOpen) return null;
 
-  const isPostgres = statusInfo?.connected && statusInfo.hasPostgresEnv;
+  const isPostgres = Boolean(statusInfo?.connected && statusInfo?.hasPostgresEnv);
+  const providerDisplay = toDisplayString(statusInfo?.provider, 'API Servidor');
+  const messageDisplay = toDisplayString(
+    statusInfo?.message,
+    isPostgres
+      ? 'La base de datos PostgreSQL está activa. Los contactos y cuentas se comparten en tiempo real entre todos los usuarios.'
+      : 'Las variables DATABASE_URL o POSTGRES_URL no están detectadas en este entorno. El servidor sincroniza los datos mediante memoria y respaldo local.'
+  );
+  const errorDisplay = toDisplayString(statusInfo?.error);
+  const codeDisplay = toDisplayString(statusInfo?.code);
+  const detailDisplay = toDisplayString(statusInfo?.detail);
+  const envVarDisplay = toDisplayString(statusInfo?.envVarUsed);
 
-  const envSnippet = `# Vercel Postgres / Prisma Postgres connection string
-POSTGRES_URL="postgres://default:..."
-# O si usas Prisma Postgres / Neon / Supabase:
-DATABASE_URL="postgres://default:..."`;
+  const envSnippet = `# Para Prisma Postgres, Vercel Postgres, Supabase o Neon:
+DATABASE_URL="postgres://default:tu_password@..."
+POSTGRES_URL="postgres://default:tu_password@..."`;
 
   const handleCopyEnv = () => {
     navigator.clipboard.writeText(envSnippet);
@@ -107,7 +133,7 @@ DATABASE_URL="postgres://default:..."`;
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-sm">
                   {isPostgres
-                    ? 'Conectado a Vercel Postgres'
+                    ? 'Conectado a PostgreSQL'
                     : 'Modo Servidor / Memoria Local'}
                 </span>
                 <span
@@ -117,28 +143,46 @@ DATABASE_URL="postgres://default:..."`;
                       : 'bg-amber-200/80 text-amber-900'
                   }`}
                 >
-                  {statusInfo?.provider || 'API Servidor'}
+                  {providerDisplay}
                 </span>
               </div>
               <p className="mt-1 text-slate-600 leading-relaxed">
-                {statusInfo?.message ||
-                  (isPostgres
-                    ? 'La base de datos PostgreSQL está activa. Los contactos y cuentas se comparten en tiempo real entre todos los usuarios.'
-                    : 'Las variables POSTGRES_URL o DATABASE_URL no están detectadas en este entorno. El servidor sincroniza los datos mediante memoria y respaldo local.')}
+                {messageDisplay}
               </p>
-              {statusInfo?.error && (
-                <div className="mt-2 p-2.5 rounded-lg bg-red-100/80 border border-red-200 text-red-900 font-mono text-[11px] leading-tight space-y-1">
+
+              {/* Real Database Error Message Box */}
+              {Boolean(errorDisplay) && (
+                <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-300 text-red-900 font-mono text-[11px] leading-tight space-y-1.5 shadow-xs">
                   <div className="font-semibold text-red-950 flex items-center justify-between">
-                    <span>Detalle del Error Postgres:</span>
-                    {statusInfo.code && <span className="bg-red-200 px-1.5 py-0.5 rounded text-[10px]">Código: {statusInfo.code}</span>}
+                    <span className="flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 text-red-600" />
+                      <span>Mensaje real de error de base de datos:</span>
+                    </span>
+                    {Boolean(codeDisplay) && (
+                      <span className="bg-red-200/80 text-red-900 px-1.5 py-0.5 rounded text-[10px] font-semibold">
+                        Código: {codeDisplay}
+                      </span>
+                    )}
                   </div>
-                  <div className="break-all">{statusInfo.error}</div>
-                  {statusInfo.detail && <div className="text-red-700 text-[10px]">{statusInfo.detail}</div>}
-                  {statusInfo.envVarUsed && (
-                    <div className="text-slate-600 text-[10px]">Variable leída: <strong>{statusInfo.envVarUsed}</strong></div>
+                  <div className="p-2 bg-white/80 rounded border border-red-200 text-red-800 break-words font-semibold text-[11px]">
+                    {errorDisplay}
+                  </div>
+                  {Boolean(detailDisplay) && (
+                    <div className="text-red-700 text-[10px]">
+                      <strong>Detalle:</strong> {detailDisplay}
+                    </div>
                   )}
+                  {Boolean(envVarDisplay) && (
+                    <div className="text-slate-600 text-[10px]">
+                      Variable de entorno leída: <strong>{envVarDisplay}</strong>
+                    </div>
+                  )}
+                  <div className="text-[10px] text-slate-500 font-sans pt-1 border-t border-red-200">
+                    💡 Si usas Prisma Postgres en Vercel, verifica que <code className="bg-red-100 px-1 py-0.5 rounded">DATABASE_URL</code> comience por <code className="bg-red-100 px-1 py-0.5 rounded">postgres://</code> o <code className="bg-red-100 px-1 py-0.5 rounded">postgresql://</code>.
+                  </div>
                 </div>
               )}
+
               {lastSyncTime && (
                 <div className="mt-2 text-[11px] text-slate-500 flex items-center gap-1.5">
                   <RefreshCw className="w-3 h-3 text-slate-400" />

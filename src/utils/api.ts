@@ -21,13 +21,33 @@ export interface FetchContactsResponse {
   error?: string;
 }
 
+export function toSafeString(val: any, fallback = ''): string {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (typeof val === 'object') {
+    if (typeof val.message === 'string') return val.message;
+    if (typeof val.error === 'string') return val.error;
+    try {
+      return JSON.stringify(val);
+    } catch {
+      return String(val);
+    }
+  }
+  return String(val);
+}
+
 async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
     const errData = await res.json();
     if (errData?.error) {
-      const codePart = errData.code ? ` [Code: ${errData.code}]` : '';
-      const detailPart = errData.detail ? ` - ${errData.detail}` : '';
-      return `${errData.error}${codePart}${detailPart}`;
+      const errorStr = toSafeString(errData.error);
+      const codePart = errData.code ? ` [Code: ${toSafeString(errData.code)}]` : '';
+      const detailPart = errData.detail ? ` - ${toSafeString(errData.detail)}` : '';
+      return `${errorStr}${codePart}${detailPart}`;
+    }
+    if (errData?.message) {
+      return toSafeString(errData.message);
     }
   } catch {
     // Non-JSON response
@@ -72,7 +92,7 @@ export async function apiFetchContacts(): Promise<FetchContactsResponse> {
       source: 'offline_cache',
       count: local.length,
       dbConnected: false,
-      error: err?.message || 'Error de conexión',
+      error: toSafeString(err, 'Error de conexión'),
     };
   }
 }
@@ -101,7 +121,7 @@ export async function apiSaveContact(contact: Contact): Promise<{ contact: Conta
     return { contact, source: 'local_cache' };
   } catch (err: any) {
     console.warn('⚠️ Guardado en API falló, persistiendo localmente:', err);
-    return { contact, source: 'local_cache_offline', error: err?.message };
+    return { contact, source: 'local_cache_offline', error: toSafeString(err) };
   }
 }
 
@@ -124,7 +144,7 @@ export async function apiDeleteContact(id: string): Promise<{ success: boolean; 
     return { success: Boolean(data.success), source: data.source || 'api' };
   } catch (err: any) {
     console.warn('⚠️ Eliminación en API falló, persistiendo localmente:', err);
-    return { success: true, source: 'local_cache_offline', error: err?.message };
+    return { success: true, source: 'local_cache_offline', error: toSafeString(err) };
   }
 }
 
@@ -158,7 +178,7 @@ export async function apiBatchSync(
   } catch (err: any) {
     console.warn('⚠️ Sincronización batch en API falló, usando local:', err);
     saveLocalContacts(contacts);
-    return { contacts, source: 'local_cache_offline', error: err?.message };
+    return { contacts, source: 'local_cache_offline', error: toSafeString(err) };
   }
 }
 
@@ -186,7 +206,7 @@ export async function apiResetDatabase(): Promise<{ contacts: Contact[]; source:
   } catch (err: any) {
     console.warn('⚠️ Reset vía API falló, restaurando localmente:', err);
     const local = loadLocalContacts();
-    return { contacts: local, source: 'local_cache_offline', error: err?.message };
+    return { contacts: local, source: 'local_cache_offline', error: toSafeString(err) };
   }
 }
 
@@ -200,26 +220,42 @@ export async function apiGetStatus(): Promise<DbStatusInfo> {
       },
     });
 
-    const data = await res.json();
+    let data: any = {};
+    try {
+      data = await res.json();
+    } catch {
+      data = { message: `Respuesta del servidor no válida (HTTP ${res.status})` };
+    }
+
+    const errorStr = data.error ? toSafeString(data.error) : undefined;
+    const messageStr = toSafeString(data.message, data.connected ? 'Conexión exitosa' : '');
+    const codeStr = data.code ? toSafeString(data.code) : undefined;
+    const detailStr = data.detail ? toSafeString(data.detail) : undefined;
+    const envVarUsedStr = data.envVarUsed ? toSafeString(data.envVarUsed) : null;
+    const providerStr = toSafeString(data.provider, 'Desconocido');
+
     return {
       connected: Boolean(data.connected),
-      provider: data.provider || 'Desconocido',
+      provider: providerStr,
       hasPostgresEnv: Boolean(data.hasPostgresEnv),
-      envVarUsed: data.envVarUsed,
+      envVarUsed: envVarUsedStr,
       tableInitialized: Boolean(data.tableInitialized),
-      message: data.message || '',
-      error: data.error,
-      code: data.code,
-      detail: data.detail,
+      message: messageStr,
+      error: errorStr,
+      code: codeStr,
+      detail: detailStr,
     };
   } catch (err: any) {
+    const errStr = toSafeString(err, 'No se pudo contactar al endpoint /api/status');
     return {
       connected: false,
       provider: 'Sin conexión',
       hasPostgresEnv: false,
+      envVarUsed: null,
       tableInitialized: false,
-      message: err?.message || 'No se pudo contactar al endpoint /api/status',
-      error: err?.message,
+      message: errStr,
+      error: errStr,
     };
   }
 }
+

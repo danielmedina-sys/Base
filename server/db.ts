@@ -19,37 +19,37 @@ export interface DbConnectionInfo {
 
 /**
  * Returns connection info from process.env.
- * Checks POSTGRES_URL, DATABASE_URL, POSTGRES_PRISMA_URL, POSTGRES_URL_NON_POOLING.
- * Handles Prisma Postgres protocol `prisma+postgres://` by converting to `postgres://`.
+ * Prioritizes process.env.DATABASE_URL before process.env.POSTGRES_URL (as required for Prisma Postgres).
+ * Checks which candidate variable begins with standard postgres:// or postgresql://.
+ * Handles Prisma protocol `prisma+postgres://` by converting to `postgres://`.
  */
 export function getConnectionInfo(): DbConnectionInfo {
-  let envVarName: string | null = null;
-  let rawUrl: string | null = null;
+  const candidates: Array<{ name: string; val: string }> = [
+    { name: 'DATABASE_URL', val: (process.env.DATABASE_URL || '').trim() },
+    { name: 'POSTGRES_URL', val: (process.env.POSTGRES_URL || '').trim() },
+    { name: 'POSTGRES_URL_NON_POOLING', val: (process.env.POSTGRES_URL_NON_POOLING || '').trim() },
+    { name: 'POSTGRES_PRISMA_URL', val: (process.env.POSTGRES_PRISMA_URL || '').trim() },
+    { name: 'PRISMA_DATABASE_URL', val: (process.env.PRISMA_DATABASE_URL || '').trim() },
+  ].filter((c) => c.val.length > 0);
 
-  if (process.env.POSTGRES_URL) {
-    envVarName = 'POSTGRES_URL';
-    rawUrl = process.env.POSTGRES_URL.trim();
-  } else if (process.env.DATABASE_URL) {
-    envVarName = 'DATABASE_URL';
-    rawUrl = process.env.DATABASE_URL.trim();
-  } else if (process.env.POSTGRES_PRISMA_URL) {
-    envVarName = 'POSTGRES_PRISMA_URL';
-    rawUrl = process.env.POSTGRES_PRISMA_URL.trim();
-  } else if (process.env.POSTGRES_URL_NON_POOLING) {
-    envVarName = 'POSTGRES_URL_NON_POOLING';
-    rawUrl = process.env.POSTGRES_URL_NON_POOLING.trim();
-  }
-
-  if (!rawUrl) {
+  if (candidates.length === 0) {
     return { url: null, envVarName: null, isPrisma: false, cleanUrl: null };
   }
 
-  let cleanUrl = rawUrl;
-  const isPrisma = rawUrl.startsWith('prisma+postgres://');
+  // 1. Prioritize variables starting with postgres:// or postgresql:// (DATABASE_URL first)
+  const standardPostgres = candidates.find(
+    (c) => c.val.startsWith('postgres://') || c.val.startsWith('postgresql://')
+  );
+
+  const selected = standardPostgres || candidates[0];
+  const envVarName = selected.name;
+  const rawUrl = selected.val;
+  const isPrisma = rawUrl.startsWith('prisma+postgres://') || envVarName.includes('PRISMA');
 
   // Convert prisma+postgres:// to standard postgres:// for node-pg driver
-  if (isPrisma) {
-    cleanUrl = rawUrl.replace('prisma+postgres://', 'postgres://');
+  let cleanUrl = rawUrl;
+  if (cleanUrl.startsWith('prisma+postgres://')) {
+    cleanUrl = cleanUrl.replace('prisma+postgres://', 'postgres://');
   }
 
   return {
@@ -101,13 +101,33 @@ export interface DbErrorPayload {
 
 export function formatDbError(err: any): DbErrorPayload {
   const info = getConnectionInfo();
+  let messageStr = 'Error desconocido en base de datos';
+
+  if (typeof err === 'string') {
+    messageStr = err;
+  } else if (typeof err === 'object' && err !== null) {
+    if (typeof err.message === 'string') {
+      messageStr = err.message;
+    } else if (typeof err.message === 'object' && err.message !== null) {
+      messageStr = err.message.message || JSON.stringify(err.message);
+    } else {
+      try {
+        messageStr = JSON.stringify(err);
+      } catch {
+        messageStr = String(err);
+      }
+    }
+  } else if (err !== undefined && err !== null) {
+    messageStr = String(err);
+  }
+
   return {
-    message: err?.message || String(err),
-    code: err?.code,
-    detail: err?.detail,
-    hint: err?.hint,
-    envVarUsed: info.envVarName,
-    isPrisma: info.isPrisma,
+    message: messageStr,
+    code: err?.code ? String(err.code) : undefined,
+    detail: err?.detail ? String(err.detail) : undefined,
+    hint: err?.hint ? String(err.hint) : undefined,
+    envVarUsed: info.envVarName ? String(info.envVarName) : null,
+    isPrisma: Boolean(info.isPrisma),
   };
 }
 
@@ -385,16 +405,18 @@ export async function getDbStatus(): Promise<{
     };
   } catch (err: any) {
     console.error('Database connection test failed:', err);
+    const dbErr = formatDbError(err);
     return {
       connected: false,
       provider: info.isPrisma ? 'Prisma Postgres (Error)' : 'PostgreSQL (Error)',
       hasPostgresEnv: true,
       envVarUsed: info.envVarName,
       tableInitialized: isInitialized,
-      message: `Error al conectar con la base de datos: ${err?.message || String(err)}`,
-      error: err?.message || String(err),
-      code: err?.code,
-      detail: err?.detail,
+      message: `Error al conectar con la base de datos: ${dbErr.message}`,
+      error: dbErr.message,
+      code: dbErr.code,
+      detail: dbErr.detail,
     };
   }
 }
+

@@ -698,7 +698,7 @@ export default function App() {
                         : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
                     }`}
                   >
-                    {statusInfo?.provider || 'API Servidor'}
+                    {typeof statusInfo?.provider === 'string' ? statusInfo.provider : 'API Servidor'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-300 mt-0.5 leading-relaxed max-w-2xl">
