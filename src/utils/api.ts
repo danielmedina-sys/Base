@@ -28,6 +28,12 @@ export function toSafeString(val: any, fallback = ''): string {
   if (typeof val === 'object') {
     if (typeof val.message === 'string') return val.message;
     if (typeof val.error === 'string') return val.error;
+    if (val.message && typeof val.message === 'object') {
+      return toSafeString(val.message, fallback);
+    }
+    if (val.error && typeof val.error === 'object') {
+      return toSafeString(val.error, fallback);
+    }
     try {
       return JSON.stringify(val);
     } catch {

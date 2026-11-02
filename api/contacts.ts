@@ -5,7 +5,7 @@ import {
   batchSyncContacts,
   resetDatabaseToDefault,
   formatDbError,
-} from '../server/db.ts';
+} from './_db.ts';
 
 export default async function handler(req: any, res: any) {
   // Enable CORS

@@ -1,4 +1,4 @@
-import { batchSyncContacts, formatDbError } from '../../server/db.ts';
+import { batchSyncContacts, formatDbError } from '../_db.ts';
 
 export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Credentials', 'true');

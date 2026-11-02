@@ -35,7 +35,13 @@ const toDisplayString = (val: any, fallback = ''): string => {
   if (typeof val === 'number' || typeof val === 'boolean') return String(val);
   if (typeof val === 'object') {
     if (typeof val.message === 'string') return val.message;
-    if (typeof val.error === 'string') return toDisplayString(val.error);
+    if (typeof val.error === 'string') return val.error;
+    if (val.message && typeof val.message === 'object') {
+      return toDisplayString(val.message, fallback);
+    }
+    if (val.error && typeof val.error === 'object') {
+      return toDisplayString(val.error, fallback);
+    }
     try {
       return JSON.stringify(val);
     } catch {

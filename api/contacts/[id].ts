@@ -3,7 +3,7 @@ import {
   upsertContact,
   deleteContact,
   formatDbError,
-} from '../../server/db.ts';
+} from '../_db.ts';
 
 export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Credentials', 'true');

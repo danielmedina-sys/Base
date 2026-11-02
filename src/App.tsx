@@ -68,8 +68,16 @@ export default function App() {
   // Toast feedback
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
+  const showToast = useCallback((msg: any) => {
+    let text = '';
+    if (typeof msg === 'string') {
+      text = msg;
+    } else if (typeof msg === 'object' && msg !== null) {
+      text = typeof msg.message === 'string' ? msg.message : (typeof msg.error === 'string' ? msg.error : JSON.stringify(msg));
+    } else {
+      text = String(msg || '');
+    }
+    setToastMessage(text);
     setTimeout(() => {
       setToastMessage(null);
     }, 2400);

@@ -6,8 +6,15 @@ interface ToastProps {
   type?: 'success' | 'info';
 }
 
-export const Toast: React.FC<ToastProps> = ({ message, type = 'success' }) => {
+export const Toast: React.FC<ToastProps> = ({ message }) => {
   if (!message) return null;
+
+  const displayMessage: string =
+    typeof message === 'object' && message !== null
+      ? typeof (message as any).message === 'string'
+        ? (message as any).message
+        : JSON.stringify(message)
+      : String(message);
 
   return (
     <div className="fixed bottom-5 right-5 z-50 animate-in fade-in slide-in-from-bottom-3 duration-200 pointer-events-none">
@@ -15,7 +22,7 @@ export const Toast: React.FC<ToastProps> = ({ message, type = 'success' }) => {
         <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
           <Check className="w-3.5 h-3.5" />
         </div>
-        <span>{message}</span>
+        <span>{displayMessage}</span>
       </div>
     </div>
   );
